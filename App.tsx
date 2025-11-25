@@ -5,6 +5,7 @@ import { CSV_URL, HERB_CSV_URL, sectionDefinitions } from './constants';
 import { identifyFood, getRecipeIdea, RecipeContext } from './services/geminiService';
 import { isValidContent, formatData } from './utils/dataUtils';
 import { truncateText, processMedicinalText, stripHtml } from './utils/textUtils';
+import { categorizeHerb } from './utils/herbUtils';
 import AILoadingModal from './components/AILoadingModal';
 import SearchModal from './components/SearchModal';
 import ErrorBoundary from './components/ErrorBoundary';
@@ -45,7 +46,17 @@ const CATEGORY_ICONS: Record<string, string> = {
     'Poultry': '🍗',
     'Sweets': '🍬',
     'Sweeteners': '🍯',
-    'Condiments': '🧂'
+    'Condiments': '🧂',
+    'Digestive': '🌿',
+    'Hormonal': '🔬',
+    'Immunity': '🛡️',
+    'Stress & Sleep': '😴',
+    'Pain & Inflammation': '🩹',
+    'Skin & Wounds': '✨',
+    'Cognitive': '🧠',
+    'Metabolic': '⚡',
+    'Detox & Liver': '💧',
+    'Fallback': '🌿'
 };
 
 const CATEGORY_IMAGES: Record<string, string> = {
@@ -82,13 +93,25 @@ const CATEGORY_IMAGES: Record<string, string> = {
     'Poultry': 'https://images.unsplash.com/photo-1587593810167-a84920ea0742?auto=format&fit=crop&w=300&q=80',
     'Sweets': 'https://images.unsplash.com/photo-1582058091505-f87a2e55a40f?auto=format&fit=crop&w=300&q=80',
     'Sweeteners': 'https://images.unsplash.com/photo-1587049352846-4a222e784d38?auto=format&fit=crop&w=300&q=80',
-    'Condiments': 'https://images.unsplash.com/photo-1592242335006-999228619366?auto=format&fit=crop&w=300&q=80'
+    'Condiments': 'https://images.unsplash.com/photo-1592242335006-999228619366?auto=format&fit=crop&w=300&q=80',
+    'Digestive': 'https://images.unsplash.com/photo-1504194208083-a0e4e73d61a7?auto=format&fit=crop&w=300&q=80',
+    'Hormonal': 'https://images.unsplash.com/photo-1617886322207-6f504e7472c2?auto=format&fit=crop&w=300&q=80',
+    'Immunity': 'https://images.unsplash.com/photo-1579169825453-8d4b4653cc2c?auto=format&fit=crop&w=300&q=80',
+    'Stress & Sleep': 'https://images.unsplash.com/photo-1531386151447-fd76ad5b47a3?auto=format&fit=crop&w=300&q=80',
+    'Pain & Inflammation': 'https://images.unsplash.com/photo-1552895638-7a53a1529729?auto=format&fit=crop&w=300&q=80',
+    'Skin & Wounds': 'https://images.unsplash.com/photo-1600959907703-a40728c7f248?auto=format&fit=crop&w=300&q=80',
+    'Cognitive': 'https://images.unsplash.com/photo-1535142898860-2650274710de?auto=format&fit=crop&w=300&q=80',
+    'Metabolic': 'https://images.unsplash.com/photo-1581333143522-a2769ce425a4?auto=format&fit=crop&w=300&q=80',
+    'Detox & Liver': 'https://images.unsplash.com/photo-1626229910002-3434c89f5c40?auto=format&fit=crop&w=300&q=80',
+    'Fallback': 'https://images.unsplash.com/photo-1540420773420-3366772f4999?auto=format&fit=crop&w=300&q=80'
 };
 
 export default function App() {
     const [foodData, setFoodData] = useState<FoodData>({});
+    const [herbCategories, setHerbCategories] = useState<Record<string, FoodData>>({});
     const [loading, setLoading] = useState(true);
     const [selectedCategory, setSelectedCategory] = useState<string | null>(null);
+    const [selectedHerbCategory, setSelectedHerbCategory] = useState<string | null>(null);
     const [selectedFood, setSelectedFood] = useState<string | null>(null);
     const [basis, setBasis] = useState<Basis>('All');
     const [searchTerm, setSearchTerm] = useState('');
@@ -103,6 +126,7 @@ export default function App() {
     const [recipeBasket, setRecipeBasket] = useState<string[]>([]);
     const [refreshKey, setRefreshKey] = useState(0);
     const [isTamil, setIsTamil] = useState(false);
+    const [isTranslating, setIsTranslating] = useState(false);
 
     const loadRef = useRef(false);
     const translationPollingRef = useRef<any>(null);
@@ -110,23 +134,28 @@ export default function App() {
     // Sync initial state with Google Translate status
     useEffect(() => {
         const checkTranslationState = () => {
-             const combo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
-             if (combo && combo.value === 'ta') {
-                 setIsTamil(true);
-             } else if (document.cookie.includes('googtrans=/en/ta')) {
-                 setIsTamil(true);
-             }
+            const combo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
+            if (combo) {
+                if (combo.value === 'ta') {
+                    setIsTamil(true);
+                } else if (document.cookie.includes('googtrans=/en/ta')) {
+                    setIsTamil(true);
+                } else {
+                    setIsTamil(false);
+                }
+            }
         };
-        
-        const t1 = setTimeout(checkTranslationState, 1000);
-        const t2 = setTimeout(checkTranslationState, 3000);
-        return () => { clearTimeout(t1); clearTimeout(t2); };
+
+        const interval = setInterval(checkTranslationState, 500);
+        return () => clearInterval(interval);
     }, []);
 
     const handleRefresh = () => {
         setFoodData({});
+        setHerbCategories({});
         setLoading(true);
         setSelectedCategory(null);
+        setSelectedHerbCategory(null);
         setSelectedFood(null);
         setBasis('All');
         setSearchTerm('');
@@ -140,90 +169,95 @@ export default function App() {
         loadRef.current = false;
     };
 
-    const robustProcessCsv = (text: string, isHerbMode: boolean): FoodData => {
-        const result: FoodData = {};
-        if (!window.Papa) {
-            console.error("PapaParse not loaded");
-            return result;
-        }
+    const robustProcessCsv = (text: string, isHerbMode: boolean): Promise<FoodData | Record<string, FoodData>> => {
+        return new Promise((resolve, reject) => {
+            const result: FoodData = {};
+            const herbResult: Record<string, FoodData> = {};
+            if (!window.Papa) {
+                console.error("PapaParse not loaded");
+                return reject("PapaParse not loaded");
+            }
 
-        const isFlattened = isHerbMode;
+            const isFlattened = isHerbMode;
 
-        window.Papa.parse(text, {
-            header: true,
-            skipEmptyLines: true,
-            complete: (results: any) => {
-                results.data.forEach((row: any) => {
-                    let category = row['Category'] || row['Food Category'] || row['Group'];
-                    if (!category && isHerbMode) {
-                        const basis = row['Basis'] || '';
-                        if (basis.toLowerCase().includes('root')) category = 'Roots';
-                        else if (basis.toLowerCase().includes('leaf')) category = 'Leaves';
-                        else if (basis.toLowerCase().includes('bark')) category = 'Barks';
-                        else if (basis.toLowerCase().includes('resin')) category = 'Resins';
-                        else if (basis.toLowerCase().includes('flower')) category = 'Flowers';
-                        else if (basis.toLowerCase().includes('seed')) category = 'Seeds';
-                        else if (basis.toLowerCase().includes('fruit')) category = 'Fruits';
-                        else category = 'Medicinal Herbs';
-                    }
-                    if (!category) return;
-
-                    category = category.trim();
-
-                    const foodName = row['Food Name'] || row['Food'] || row['Name'] || row['Herb Name'] || row['Herb'] || row['English Name'];
-                    if (!foodName) return;
-
-                    const cleanName = foodName.trim();
-
-                    if (!result[category]) {
-                        result[category] = {};
-                    }
-
-                    if (!result[category][cleanName]) {
-                        result[category][cleanName] = {};
-                    }
-
-                    const details = result[category][cleanName];
-
-                    if (isFlattened) {
-                        Object.keys(row).forEach(header => {
-                            if (header === 'Category' || header === 'Food Name' || header === 'Food' || header === 'Name' || header === 'Herb Name' || header === 'English Name' || header === 'Basis') return;
-                             const val = row[header]?.trim();
-                             if (val && val !== 'N/A') {
-                                 if (!details[header]) details[header] = {};
-                                 details[header]['All'] = val;
-                             }
-                        });
-                        const img = row['Image URL'] || row['Image'];
-                        if (img) details['_imageUrl'] = { All: img };
-                        
-                        // Capture Basis for Wisdom
-                        if (row['Basis']) {
-                             const basisKey = 'Basis(Leaf/Root) (only for herbs)';
-                             if (!details[basisKey]) details[basisKey] = {};
-                             details[basisKey]['All'] = row['Basis'];
+            window.Papa.parse(text, {
+                header: true,
+                skipEmptyLines: true,
+                complete: (results: any) => {
+                    results.data.forEach((row: any) => {
+                        let category;
+                        if (isHerbMode) {
+                            category = categorizeHerb(row);
+                        } else {
+                            category = row['Category'] || row['Food Category'] || row['Group'];
                         }
 
-                    } else {
-                        const basis = row['Basis'] || 'All';
-                        Object.keys(row).forEach(header => {
-                            if (header === 'Category' || header === 'Food Name' || header === 'Food' || header === 'Name' || header === 'Basis') return;
-                             const val = row[header]?.trim();
-                             if (val && val !== 'N/A') {
-                                 if (!details[header]) details[header] = {};
-                                 details[header][basis] = val;
+                        if (!category) return;
+
+                        category = category.trim();
+
+                        const foodName = row['Food Name'] || row['Food'] || row['Name'] || row['Herb Name'] || row['Herb'] || row['English Name'];
+                        if (!foodName) return;
+
+                        const cleanName = foodName.trim();
+
+                        const target = isHerbMode ? herbResult : result;
+
+                        if (!target[category]) {
+                            target[category] = {};
+                        }
+
+                        if (!target[category][cleanName]) {
+                            target[category][cleanName] = {};
+                        }
+
+                        const details = target[category][cleanName];
+                        if (isHerbMode) {
+                            details['_originalCategory'] = { All: row['Category'] || 'Medicinal Herbs' };
+                        }
+
+                        if (isFlattened) {
+                            Object.keys(row).forEach(header => {
+                                if (header === 'Category' || header === 'Food Name' || header === 'Food' || header === 'Name' || header === 'Herb Name' || header === 'English Name' || header === 'Basis') return;
+                                 const val = row[header]?.trim();
+                                 if (val && val !== 'N/A') {
+                                     if (!details[header]) details[header] = {};
+                                     details[header]['All'] = val;
+                                 }
+                            });
+                            const img = row['Image URL'] || row['Image'];
+                            if (img) details['_imageUrl'] = { All: img };
+
+                            if (row['Basis']) {
+                                 const basisKey = 'Basis(Leaf/Root) (only for herbs)';
+                                 if (!details[basisKey]) details[basisKey] = {};
+                                 details[basisKey]['All'] = row['Basis'];
+                            }
+
+                        } else {
+                            const basis = row['Basis'] || 'All';
+                            Object.keys(row).forEach(header => {
+                                if (header === 'Category' || header === 'Food Name' || header === 'Food' || header === 'Name' || header === 'Basis') return;
+                                 const val = row[header]?.trim();
+                                 if (val && val !== 'N/A') {
+                                     if (!details[header]) details[header] = {};
+                                     details[header][basis] = val;
+                                 }
+                            });
+                            const img = row['Image URL'] || row['Image'];
+                             if (img) {
+                                 if (!details['_imageUrl']) details['_imageUrl'] = {} as any;
+                                 details['_imageUrl'][basis] = img;
                              }
-                        });
-                        const img = row['Image URL'] || row['Image'];
-                         if (img) {
-                             if (!details['_imageUrl']) details['_imageUrl'] = {} as any;
-                             details['_imageUrl'][basis] = img;
-                         }
-                    }
-                });
-            }
+                        }
+                    });
+                    resolve(isHerbMode ? herbResult : result);
+                },
+                error: (err: any) => {
+                    reject(err);
+                }
+            });
         });
-        return result;
     };
 
     useEffect(() => {
@@ -232,34 +266,63 @@ export default function App() {
     }, []);
 
     useEffect(() => {
-        setLoading(true);
-        setSelectedCategory(null);
-        setSelectedFood(null);
+        const loadData = async () => {
+            setLoading(true);
+            setSelectedCategory(null);
+            setSelectedFood(null);
 
-        const url = appMode === 'foods' ? CSV_URL : HERB_CSV_URL;
-        
-        fetch(url)
-            .then(r => r.text())
-            .then(text => {
-                const parsed = robustProcessCsv(text, appMode === 'herbs');
+            const url = appMode === 'foods' ? CSV_URL : HERB_CSV_URL;
+
+            try {
+                const response = await fetch(url);
+                const text = await response.text();
+                const parsed = await robustProcessCsv(text, appMode === 'herbs');
+
                 if (Object.keys(parsed).length > 0) {
-                    setFoodData(parsed);
+                    if (appMode === 'herbs') {
+                        const herbData = parsed as Record<string, FoodData>;
+                        setHerbCategories(herbData);
+
+                        const flattenedData: FoodData = {};
+                        Object.values(herbData).forEach(category => {
+                            Object.assign(flattenedData, category);
+                        });
+                        setFoodData(flattenedData);
+
+                    } else {
+                        setFoodData(parsed as FoodData);
+                        setHerbCategories({});
+                    }
                 }
-            })
-            .catch(err => {
+            } catch (err) {
                 console.error("Failed to load live data", err);
-            })
-            .finally(() => setLoading(false));
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        loadData();
     }, [appMode, refreshKey]);
 
-    const categories = useMemo(() => Object.keys(foodData).sort(), [foodData]);
+    const categories = useMemo(() => {
+        if (appMode === 'herbs') return Object.keys(herbCategories).sort();
+        return Object.keys(foodData).sort();
+    }, [foodData, appMode, herbCategories]);
 
     const activeFoodDetails = useMemo(() => {
-        if (selectedCategory && selectedFood && foodData[selectedCategory]) {
+        if (!selectedFood) return null;
+        if (appMode === 'herbs' && selectedHerbCategory && herbCategories[selectedHerbCategory]) {
+            return herbCategories[selectedHerbCategory][selectedFood];
+        }
+        if (appMode === 'foods' && selectedCategory && foodData[selectedCategory]) {
             return foodData[selectedCategory][selectedFood];
         }
+        // Fallback for search
+        for (const cat of Object.keys(foodData)) {
+            if (foodData[cat][selectedFood]) return foodData[cat][selectedFood];
+        }
         return null;
-    }, [foodData, selectedCategory, selectedFood]);
+    }, [foodData, selectedCategory, selectedFood, appMode, herbCategories, selectedHerbCategory]);
 
     useEffect(() => {
         if (activeFoodDetails) {
@@ -621,54 +684,38 @@ export default function App() {
         return sections;
     }, [appMode]);
 
-    const toggleTamil = () => {
-        if (translationPollingRef.current) return;
+    const handleTranslate = (targetLang: 'ta' | 'en') => {
+        if (isTranslating) return;
 
         const feedback = document.getElementById('tamil-feedback');
-        if (feedback) {
-            feedback.style.display = 'block';
-            feedback.textContent = "Connecting...";
+        const combo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
+
+        if (combo) {
+            setIsTranslating(true);
+            if (feedback) {
+                feedback.style.display = 'block';
+                feedback.textContent = "Connecting...";
+            }
+
+            combo.value = targetLang;
+            combo.dispatchEvent(new Event('change'));
+
+            setTimeout(() => {
+                setIsTamil(targetLang === 'ta');
+                setIsTranslating(false);
+                if (feedback) {
+                    feedback.textContent = targetLang === 'ta' ? "Switched to Tamil" : "Switched to English";
+                    setTimeout(() => { feedback.style.display = 'none'; }, 1500);
+                }
+            }, 500);
+
+        } else {
+            if (feedback) {
+                feedback.style.display = 'block';
+                feedback.textContent = "Translator not ready";
+                setTimeout(() => { feedback.style.display = 'none'; }, 2000);
+            }
         }
-
-        let attempts = 0;
-        const maxAttempts = 50; 
-        
-        const performToggle = () => {
-            const combo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
-            if (combo) {
-                if (isTamil) {
-                    combo.value = 'en';
-                } else {
-                    combo.value = 'ta';
-                }
-                combo.dispatchEvent(new Event('change'));
-                setIsTamil(!isTamil);
-                
-                if (feedback) {
-                    feedback.textContent = !isTamil ? "Switched to Tamil" : "Switched to English"; 
-                    setTimeout(() => { feedback.style.display = 'none'; }, 2000);
-                }
-                return true;
-            }
-            return false;
-        };
-
-        if (performToggle()) return;
-
-        translationPollingRef.current = setInterval(() => {
-            attempts++;
-            if (performToggle()) {
-                clearInterval(translationPollingRef.current!);
-                translationPollingRef.current = null;
-            } else if (attempts >= maxAttempts) {
-                clearInterval(translationPollingRef.current!);
-                translationPollingRef.current = null;
-                if (feedback) {
-                    feedback.style.display = 'none';
-                }
-                alert("Translation engine is still loading. Please check your internet and try again in a few seconds.");
-            }
-        }, 200);
     };
 
     const renderField = (label: string | null, content: string | null) => {
@@ -751,13 +798,21 @@ export default function App() {
 
             <main className="max-w-7xl mx-auto px-4 pt-6">
                 <ErrorBoundary>
-                    {selectedCategory && (
+                    {(selectedCategory || selectedHerbCategory) && (
                         <button 
-                            onClick={() => selectedFood ? setSelectedFood(null) : setSelectedCategory(null)}
+                            onClick={() => {
+                                if (selectedFood) {
+                                    setSelectedFood(null);
+                                } else if (appMode === 'herbs') {
+                                    setSelectedHerbCategory(null);
+                                } else {
+                                    setSelectedCategory(null);
+                                }
+                            }}
                             className="mb-6 flex items-center text-emerald-700 font-semibold hover:text-emerald-900 transition-colors text-lg"
                         >
                             <span className="material-icons text-2xl mr-1">arrow_back</span>
-                            {selectedFood ? `Back to ${selectedFood}` : 'Back to Categories'}
+                            {selectedFood ? `Back to ${selectedCategory || selectedHerbCategory}` : 'Back to Categories'}
                         </button>
                     )}
 
@@ -785,62 +840,63 @@ export default function App() {
                          </div>
                     )}
 
-                    {!selectedCategory && (
+                    {appMode === 'foods' && !selectedCategory && (
                         <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
-                            {categories.length > 0 ? categories.map(category => {
-                                 const fallbackIcon = CATEGORY_ICONS[category] || CATEGORY_ICONS[category.replace(' & ', ' ')] || '🍱';
-                                 let bgImage = CATEGORY_IMAGES[category];
-                                 if (!bgImage) {
-                                    const key = Object.keys(CATEGORY_IMAGES).find(k => category.includes(k) || k.includes(category));
-                                    if (key) bgImage = CATEGORY_IMAGES[key];
-                                 }
-
-                                 return (
+                            {categories.map(category => {
+                                const fallbackIcon = CATEGORY_ICONS[category] || CATEGORY_ICONS[category.replace(' & ', ' ')] || '🍱';
+                                let bgImage = CATEGORY_IMAGES[category] || CATEGORY_IMAGES['Fallback'];
+                                return (
                                     <button
                                         key={category}
                                         onClick={() => setSelectedCategory(category)}
                                         className="group relative bg-white rounded-3xl shadow-sm hover:shadow-md transition-all duration-300 overflow-hidden aspect-[4/5] flex flex-col"
                                     >
                                         <div className="absolute inset-0 bg-gray-200">
-                                           {bgImage ? (
-                                               <img 
-                                                    src={bgImage} 
-                                                    alt={category} 
-                                                    className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-500"
-                                                    onError={(e) => {
-                                                        (e.target as HTMLImageElement).style.display = 'none';
-                                                        (e.target as HTMLImageElement).parentElement!.classList.add('flex', 'items-center', 'justify-center', 'bg-emerald-50');
-                                                        (e.target as HTMLImageElement).parentElement!.innerHTML = `<span class="text-5xl">${fallbackIcon}</span>`;
-                                                    }}
-                                               />
-                                           ) : (
-                                               <div className="w-full h-full flex items-center justify-center bg-emerald-50 text-5xl">
-                                                   {fallbackIcon}
-                                               </div>
-                                           )}
-                                           <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-80" />
+                                            <img src={bgImage} alt={category} className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-500" onError={(e) => { e.currentTarget.src = CATEGORY_IMAGES['Fallback']; }} />
+                                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-80" />
                                         </div>
-                                        
                                         <div className="absolute bottom-0 left-0 right-0 p-5 text-center">
                                             <h3 className="text-white font-bold text-xl tracking-wide shadow-black drop-shadow-md">{category}</h3>
                                             <span className="text-emerald-100 text-lg font-medium">{Object.keys(foodData[category]).length} items</span>
                                         </div>
                                     </button>
                                 );
-                            }) : (
-                                <div className="col-span-full text-center py-12 text-gray-500 text-lg">
-                                    {loading ? 'Loading data...' : 'No categories found.'}
-                                </div>
-                            )}
+                            })}
                         </div>
                     )}
 
-                    {selectedCategory && !selectedFood && (
+                    {appMode === 'herbs' && !selectedHerbCategory && (
+                        <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-5">
+                            {categories.map(category => {
+                                const fallbackIcon = CATEGORY_ICONS[category] || CATEGORY_ICONS['Fallback'];
+                                const bgImage = CATEGORY_IMAGES[category] || CATEGORY_IMAGES['Fallback'];
+                                const items = herbCategories[category] ? Object.keys(herbCategories[category]).length : 0;
+                                return (
+                                    <button
+                                        key={category}
+                                        onClick={() => setSelectedHerbCategory(category)}
+                                        className="group relative bg-white rounded-3xl shadow-sm hover:shadow-md transition-all duration-300 overflow-hidden aspect-[4/5] flex flex-col"
+                                    >
+                                        <div className="absolute inset-0 bg-gray-200">
+                                            <img src={bgImage} alt={category} className="w-full h-full object-cover opacity-90 group-hover:scale-105 transition-transform duration-500" onError={(e) => { e.currentTarget.src = CATEGORY_IMAGES['Fallback']; }} />
+                                            <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent opacity-80" />
+                                        </div>
+                                        <div className="absolute bottom-0 left-0 right-0 p-5 text-center">
+                                            <h3 className="text-white font-bold text-xl tracking-wide shadow-black drop-shadow-md">{category} {fallbackIcon}</h3>
+                                            <span className="text-emerald-100 text-lg font-medium">{items} items</span>
+                                        </div>
+                                    </button>
+                                );
+                            })}
+                        </div>
+                    )}
+
+                    {(selectedCategory || selectedHerbCategory) && !selectedFood && (
                         <div>
-                            <h2 className="text-3xl font-bold text-gray-800 mb-5">{selectedCategory}</h2>
+                            <h2 className="text-3xl font-bold text-gray-800 mb-5">{selectedCategory || selectedHerbCategory}</h2>
                             <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-5">
-                                {Object.keys(foodData[selectedCategory]).sort().map(food => {
-                                    const details = foodData[selectedCategory][food];
+                                {Object.keys(appMode === 'herbs' ? herbCategories[selectedHerbCategory!] : foodData[selectedCategory!]).sort().map(food => {
+                                    const details = appMode === 'herbs' ? herbCategories[selectedHerbCategory!][food] : foodData[selectedCategory!][food];
                                     const image = details['_imageUrl']?.['All'];
                                     const description = stripHtml(formatData(details['Specific Benefits'] || details['Macros Health Effect'], 'All') || 'Explore nutritional details...');
                                     const isSelected = recipeBasket.includes(food);
@@ -1017,12 +1073,16 @@ export default function App() {
                         Connecting...
                     </div>
                     <button
-                        onClick={toggleTamil}
-                        className={`w-14 h-14 rounded-full shadow-lg border border-gray-200 flex flex-col items-center justify-center transition-all ${isTamil ? 'bg-indigo-100 text-indigo-700 border-indigo-300' : 'bg-white text-gray-700 hover:bg-gray-50'}`}
-                        title="Translate to Tamil/English"
+                        onMouseDown={() => handleTranslate('ta')}
+                        onMouseUp={() => handleTranslate('en')}
+                        onTouchStart={() => handleTranslate('ta')}
+                        onTouchEnd={() => handleTranslate('en')}
+                        disabled={isTranslating}
+                        className={`w-14 h-14 rounded-full shadow-lg border flex flex-col items-center justify-center transition-all ${isTamil ? 'bg-indigo-100 text-indigo-700 border-indigo-300' : 'bg-white text-gray-700 hover:bg-gray-50'} ${isTranslating ? 'opacity-50 cursor-not-allowed' : ''}`}
+                        title="Hold to Translate to Tamil"
                     >
                         <span className="material-icons text-2xl">translate</span>
-                        <span className="text-[10px] font-bold uppercase">{isTamil ? 'ENG' : 'TAM'}</span>
+                        <span className="text-[10px] font-bold uppercase">TAM</span>
                     </button>
                 </div>
 
