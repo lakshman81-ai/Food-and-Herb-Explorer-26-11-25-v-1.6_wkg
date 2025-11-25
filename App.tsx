@@ -269,6 +269,7 @@ export default function App() {
         const loadData = async () => {
             setLoading(true);
             setSelectedCategory(null);
+            setSelectedHerbCategory(null);
             setSelectedFood(null);
 
             const url = appMode === 'foods' ? CSV_URL : HERB_CSV_URL;
@@ -282,13 +283,7 @@ export default function App() {
                     if (appMode === 'herbs') {
                         const herbData = parsed as Record<string, FoodData>;
                         setHerbCategories(herbData);
-
-                        const flattenedData: FoodData = {};
-                        Object.values(herbData).forEach(category => {
-                            Object.assign(flattenedData, category);
-                        });
-                        setFoodData(flattenedData);
-
+                        setFoodData(herbData);
                     } else {
                         setFoodData(parsed as FoodData);
                         setHerbCategories({});
@@ -688,34 +683,51 @@ export default function App() {
         if (isTranslating) return;
 
         const feedback = document.getElementById('tamil-feedback');
-        const combo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
 
-        if (combo) {
-            setIsTranslating(true);
-            if (feedback) {
-                feedback.style.display = 'block';
-                feedback.textContent = "Connecting...";
+        const performTranslation = () => {
+            const combo = document.querySelector('.goog-te-combo') as HTMLSelectElement;
+            if (combo) {
+                combo.value = targetLang;
+                combo.dispatchEvent(new Event('change'));
+
+                setTimeout(() => {
+                    setIsTamil(targetLang === 'ta');
+                    setIsTranslating(false);
+                    if (feedback) {
+                        feedback.textContent = targetLang === 'ta' ? "Switched to Tamil" : "Switched to English";
+                        setTimeout(() => { feedback.style.display = 'none'; }, 1500);
+                    }
+                }, 500);
+                return true;
             }
+            return false;
+        };
 
-            combo.value = targetLang;
-            combo.dispatchEvent(new Event('change'));
+        setIsTranslating(true);
+        if (feedback) {
+            feedback.style.display = 'block';
+            feedback.textContent = "Connecting...";
+        }
 
-            setTimeout(() => {
-                setIsTamil(targetLang === 'ta');
+        if (performTranslation()) {
+            return;
+        }
+
+        let attempts = 0;
+        const maxAttempts = 25; // 5 seconds
+        const interval = setInterval(() => {
+            attempts++;
+            if (performTranslation()) {
+                clearInterval(interval);
+            } else if (attempts >= maxAttempts) {
+                clearInterval(interval);
                 setIsTranslating(false);
                 if (feedback) {
-                    feedback.textContent = targetLang === 'ta' ? "Switched to Tamil" : "Switched to English";
-                    setTimeout(() => { feedback.style.display = 'none'; }, 1500);
+                    feedback.textContent = "Translator not ready. Check connection.";
+                    setTimeout(() => { feedback.style.display = 'none'; }, 2000);
                 }
-            }, 500);
-
-        } else {
-            if (feedback) {
-                feedback.style.display = 'block';
-                feedback.textContent = "Translator not ready";
-                setTimeout(() => { feedback.style.display = 'none'; }, 2000);
             }
-        }
+        }, 200);
     };
 
     const renderField = (label: string | null, content: string | null) => {
